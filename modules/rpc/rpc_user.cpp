@@ -231,6 +231,8 @@ private:
 		RPC::Array &root;
 
 	public:
+		size_t lines = 0;
+
 		RPCCommandReply(RPC::Array &r)
 			: root(r)
 		{
@@ -239,11 +241,13 @@ private:
 		void SendMessage(BotInfo *source, const Anope::string &msg) override
 		{
 			root.Reply(Anope::RemoveFormatting(msg.replace_all_cs("\x1A", "\x20")));
+			++lines;
 		};
 	};
 
 public:
 	static bool pretenduser;
+	static bool allowunregistered;
 
 	AnopeCommandRPCEvent(Module *o)
 		: RPC::Event(o, "anope.command", 3)
@@ -252,17 +256,25 @@ public:
 
 	bool Run(RPC::ServiceInterface *iface, HTTP::Client *client, RPC::Request &request) override
 	{
+		// The nick the command is attributed to. An empty account runs as
+		// the literal "RPC"; a registered account runs as itself; with
+		// allowunregistered an unregistered nick runs as that nick with no
+		// account, which is what an offline REGISTER of somebody else's
+		// nick needs (ns_register registers source.GetNick()).
+		Anope::string sourcenick = "RPC";
 		NickAlias *na = nullptr;
 		if (!request.data[0].empty())
 		{
 			na = request.data[0].is_pos_number_only()
 				? NickAlias::FindId(Anope::Convert(request.data[0], 0))
 				: NickAlias::Find(request.data[0]);
-			if (!na)
+			if (!na && !allowunregistered)
 			{
 				request.Error(ERR_INVALID_ACCOUNT, "No such account");
 				return true;
 			}
+			if (!na)
+				sourcenick = request.data[0];
 		}
 
 		auto *bi = BotInfo::Find(request.data[1], true);
@@ -299,9 +311,13 @@ public:
 		}
 
 		RPCCommandReply reply(request.Root<RPC::Array>());
-		CommandSource source(na ? na->nick : "RPC", u, na ? *na->nc : nullptr, &reply, bi, request.id);
+		CommandSource source(na ? na->nick : sourcenick, u, na ? *na->nc : nullptr, &reply, bi, request.id);
 
-		if (!Command::Run(source, command))
+		// Command::Run also answers false after it has already replied
+		// ("Unknown command", "Syntax: ...", "Access denied.", "You must
+		// identify"). Those lines are the answer the caller needs, so only
+		// a command that produced no output at all is an RPC error.
+		if (!Command::Run(source, command) && !reply.lines)
 			request.Error(ERR_INVALID_COMMAND, "No such command");
 
 		return true;
@@ -309,6 +325,7 @@ public:
 };
 
 bool AnopeCommandRPCEvent::pretenduser = false;
+bool AnopeCommandRPCEvent::allowunregistered = false;
 
 class ModuleRPCAccount final
 	: public Module
@@ -332,6 +349,7 @@ public:
 	void OnReload(Configuration::Conf &conf) override
 	{
 		AnopeCommandRPCEvent::pretenduser = conf.GetModule(this).Get<bool>("pretenduser");
+		AnopeCommandRPCEvent::allowunregistered = conf.GetModule(this).Get<bool>("allowunregistered");
 	}
 };
 
