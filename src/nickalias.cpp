@@ -228,7 +228,11 @@ Serializable *NickAlias::Type::Unserialize(Serializable *obj, Serialize::Data &d
 	// End 1.9 compatibility.
 
 	// Begin 2.0 compatibility.
-	if (na->registered < na->nc->registered)
+	// A 2.0 NickCore carries no registration time at all, so it loads as 0
+	// and the "older alias wins" rule below could never fire — every
+	// migrated account reported registered=0 forever. Treat an unset core
+	// time as "take the alias's", then keep the oldest alias as before.
+	if (!na->nc->registered || na->registered < na->nc->registered)
 		na->nc->registered = na->registered;
 	// End 2.0 compatibility.
 
